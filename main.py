@@ -14,19 +14,8 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 DRAFT_DATA_FILE = 'draft_data.json'
 ROSTER_FILE = 'thanksgiving_rosters.json'
 
-# Valid teams for Thanksgiving weekend 2025
-VALID_TEAMS = ['GB', 'DET', 'KC', 'DAL', 'CIN', 'BAL', 'CHI', 'PHI']
-
-TEAM_NAMES = {
-    'GB': 'Green Bay Packers',
-    'DET': 'Detroit Lions',
-    'KC': 'Kansas City Chiefs',
-    'DAL': 'Dallas Cowboys',
-    'CIN': 'Cincinnati Bengals',
-    'BAL': 'Baltimore Ravens',
-    'CHI': 'Chicago Bears',
-    'PHI': 'Philadelphia Eagles'
-}
+# Draft defaults
+DEFAULT_ROUNDS = 5
 
 # Emoji numbers for selection
 NUMBER_EMOJIS = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟']
@@ -34,10 +23,9 @@ NUMBER_EMOJIS = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣
 # Position emojis for navigation
 POSITION_EMOJIS = {
     '🏈': 'QB',
-    '🏃': 'RB', 
+    '🏃': 'RB',
     '🙌': 'WR',
-    '🤲': 'TE',
-    '🛡️': 'DEF'
+    '🤲': 'TE'
 }
 
 class RosterManager:
@@ -68,23 +56,6 @@ class RosterManager:
     
     def get_top_available(self, position, drafted_players, limit=10):
         """Get top available players at a position"""
-        if position == 'DEF':
-            # For defense, return one entry per team
-            available_teams = []
-            for team in VALID_TEAMS:
-                player_key = f"defense|{team.lower()}"
-                if player_key not in drafted_players:
-                    available_teams.append({
-                        'name': f'{TEAM_NAMES[team]} Defense',
-                        'full_name': f'{TEAM_NAMES[team]} Defense',
-                        'position': 'DEF',
-                        'team': team,
-                        'team_name': TEAM_NAMES[team],
-                        'headshot': '',
-                        'jersey': ''
-                    })
-            return available_teams[:limit]
-        
         available = []
         for player in self.players_by_position.get(position, []):
             player_key = f"{player['name'].lower()}|{player['team'].lower()}"
@@ -109,6 +80,13 @@ class DraftManager:
         self.current_draft_message = None
         self.current_position = 'QB'
         self.load_data()
+
+    def end_draft(self):
+        """End the current draft session while preserving picks"""
+        self.is_active = False
+        self.channel_id = None
+        self.current_draft_message = None
+        self.save_data()
     
     def start_draft(self, draft_order, num_rounds, channel_id):
         self.base_draft_order = draft_order
@@ -296,7 +274,7 @@ async def create_draft_board(ctx, position):
     # Add position navigation
     embed.add_field(
         name="\n🔄 Switch Position",
-        value="🏈 QB | 🏃 RB | 🙌 WR | 🤲 TE | 🛡️ DEF",
+        value="🏈 QB | 🏃 RB | 🙌 WR | 🤲 TE",
         inline=False
     )
     
@@ -304,21 +282,57 @@ async def create_draft_board(ctx, position):
     
     return embed, available_players
 
-@bot.command(name='startdraft')
-async def start_draft(ctx, rounds: int, *user_mentions):
-    """Start a new visual draft"""
+@bot.command(name='setdraftorder')
+async def set_draft_order(ctx, *user_mentions):
+    """Set and save a specific base draft order"""
     if not user_mentions:
-        await ctx.send("❌ Please provide number of rounds and mention users:\n`!startdraft 5 @User1 @User2 @User3`")
+        await ctx.send("❌ Please mention users in the desired order: `!setdraftorder @User1 @User2 @User3`")
         return
-    
-    if rounds < 1 or rounds > 20:
-        await ctx.send("❌ Number of rounds must be between 1 and 20!")
-        return
-    
+
     draft_order = [str(user.id) for user in ctx.message.mentions]
-    
+
     if len(draft_order) < 2:
-        await ctx.send("❌ Need at least 2 users for a draft!")
+        await ctx.send("❌ Need at least 2 users for a draft order!")
+        return
+
+    draft_manager.base_draft_order = draft_order
+    draft_manager.save_data()
+
+    order_text = "\n".join([f"{i+1}. <@{uid}>" for i, uid in enumerate(draft_order)])
+    embed = discord.Embed(
+        title="✅ Draft Order Saved",
+        description=f"The base draft order has been set:\n{order_text}\n\nUse `!startdraft` to start using this order, or provide mentions to override it.",
+        color=discord.Color.green()
+    )
+
+    await ctx.send(embed=embed)
+
+@bot.command(name='startdraft')
+async def start_draft(ctx, *args):
+    """Start a new visual draft (defaults to 5 rounds)"""
+    rounds = DEFAULT_ROUNDS
+
+    # Support an optional explicit rounds argument; otherwise default to 5
+    if args:
+        try:
+            possible_rounds = int(args[0])
+            if possible_rounds != DEFAULT_ROUNDS:
+                await ctx.send("❌ Drafts are limited to exactly 5 rounds. No other round counts are supported.")
+                return
+            rounds = possible_rounds
+            args = args[1:]
+        except ValueError:
+            # First argument is a mention; keep default rounds
+            pass
+
+    # Draft order can be provided directly or pulled from a saved order
+    if ctx.message.mentions:
+        draft_order = [str(user.id) for user in ctx.message.mentions]
+    else:
+        draft_order = draft_manager.base_draft_order
+
+    if len(draft_order) < 2:
+        await ctx.send("❌ Need at least 2 users for a draft! Provide mentions or set a saved order with `!setdraftorder`.")
         return
     
     draft_manager.start_draft(draft_order, rounds, ctx.channel.id)
@@ -346,8 +360,30 @@ async def start_draft(ctx, rounds: int, *user_mentions):
     # Add position navigation
     for emoji in POSITION_EMOJIS.keys():
         await message.add_reaction(emoji)
-    
+
     draft_manager.current_draft_message = message.id
+
+@bot.command(name='enddraft')
+async def end_draft(ctx):
+    """End the current draft early"""
+    if not draft_manager.is_active:
+        await ctx.send("❌ There is no active draft to end. Use `!startdraft` to begin a new one.")
+        return
+
+    total_picks = len(draft_manager.all_picks)
+    draft_manager.end_draft()
+
+    embed = discord.Embed(
+        title="🛑 Draft Ended",
+        description=(
+            f"Ended by <@{ctx.author.id}>.\n\n"
+            f"**Picks recorded:** {total_picks}\n"
+            "Use `!export` to download results or `!startdraft` to begin a new draft."
+        ),
+        color=discord.Color.red()
+    )
+
+    await ctx.send(embed=embed)
 
 @bot.event
 async def on_reaction_add(reaction, user):
