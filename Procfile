@@ -1,1 +1,1 @@
-worker: python fantasy_draft_bot.py
+worker: python main.py
