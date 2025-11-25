@@ -11,6 +11,67 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 
 # Data storage
 DRAFT_DATA_FILE = 'draft_data.json'
+ROSTER_FILE = 'thanksgiving_rosters.json'
+
+# Valid teams for Thanksgiving weekend 2025
+VALID_TEAMS = ['GB', 'DET', 'KC', 'DAL', 'CIN', 'BAL', 'CHI', 'PHI']
+
+TEAM_NAMES = {
+    'GB': 'Green Bay Packers',
+    'DET': 'Detroit Lions',
+    'KC': 'Kansas City Chiefs',
+    'DAL': 'Dallas Cowboys',
+    'CIN': 'Cincinnati Bengals',
+    'BAL': 'Baltimore Ravens',
+    'CHI': 'Chicago Bears',
+    'PHI': 'Philadelphia Eagles'
+}
+
+class RosterManager:
+    def __init__(self):
+        self.players = []
+        self.player_lookup = {}
+        self.load_rosters()
+    
+    def load_rosters(self):
+        """Load roster data from JSON file"""
+        if os.path.exists(ROSTER_FILE):
+            try:
+                with open(ROSTER_FILE, 'r') as f:
+                    self.players = json.load(f)
+                
+                # Create lookup dictionary
+                for player in self.players:
+                    name_lower = player['name'].lower()
+                    team_lower = player['team'].lower()
+                    key = f"{name_lower}|{team_lower}"
+                    self.player_lookup[key] = player
+                
+                print(f"✅ Loaded {len(self.players)} players from rosters")
+            except Exception as e:
+                print(f"⚠️ Could not load roster file: {e}")
+                print("   Players can still be drafted, but without validation/photos")
+        else:
+            print(f"⚠️ Roster file not found: {ROSTER_FILE}")
+            print("   Players can still be drafted, but team validation will be strict")
+    
+    def validate_team(self, team_abbr):
+        """Check if team is playing this weekend"""
+        return team_abbr.upper() in VALID_TEAMS
+    
+    def find_player(self, player_name, team_abbr):
+        """Look up player in roster"""
+        key = f"{player_name.lower()}|{team_abbr.lower()}"
+        return self.player_lookup.get(key)
+    
+    def get_team_players(self, team_abbr, position=None):
+        """Get all players from a team, optionally filtered by position"""
+        team_players = [p for p in self.players if p['team'].upper() == team_abbr.upper()]
+        if position:
+            team_players = [p for p in team_players if p['position'].upper() == position.upper()]
+        return sorted(team_players, key=lambda x: x['name'])
+
+roster_manager = RosterManager()
 
 class DraftManager:
     def __init__(self):
@@ -238,7 +299,7 @@ async def start_draft(ctx, rounds: int, *user_mentions):
 async def make_pick(ctx, *, player_info):
     """
     Make a draft pick
-    Usage: !pick Tom Brady, Buccaneers
+    Usage: !pick Patrick Mahomes, KC
     """
     if not draft_manager.is_active:
         await ctx.send("❌ No active draft! Start one with `!startdraft`")
@@ -252,10 +313,19 @@ async def make_pick(ctx, *, player_info):
     
     # Parse player info
     if ',' not in player_info:
-        await ctx.send("❌ Format: `!pick PlayerName, TeamName`")
+        await ctx.send("❌ Format: `!pick PlayerName, TeamAbbreviation` (e.g., `!pick Patrick Mahomes, KC`)")
         return
     
     player_name, player_team = [x.strip() for x in player_info.split(',', 1)]
+    
+    # Validate team is playing this weekend
+    if not roster_manager.validate_team(player_team):
+        await ctx.send(f"❌ **{player_team}** is not playing this Thanksgiving weekend!\n"
+                      f"Valid teams: **{', '.join(VALID_TEAMS)}**")
+        return
+    
+    # Look up player in roster
+    player_data = roster_manager.find_player(player_name, player_team)
     
     # Record the pick
     user_id, error = draft_manager.add_pick(player_name, player_team)
@@ -269,7 +339,7 @@ async def make_pick(ctx, *, player_info):
     current_round = draft_manager.get_current_round()
     pick_in_round = ((pick_number - 1) % len(draft_manager.base_draft_order)) + 1
     
-    # Announcement
+    # Create announcement embed with player photo if available
     embed = discord.Embed(
         title=f"Pick #{pick_number} (Round {current_round}, Pick {pick_in_round})",
         description=f"<@{ctx.author.id}> selects:",
@@ -277,6 +347,15 @@ async def make_pick(ctx, *, player_info):
     )
     embed.add_field(name="Player", value=player_name, inline=True)
     embed.add_field(name="Team", value=player_team, inline=True)
+    
+    # Add position and photo if we found the player
+    if player_data:
+        embed.add_field(name="Position", value=player_data.get('position', 'N/A'), inline=True)
+        if player_data.get('headshot'):
+            embed.set_thumbnail(url=player_data['headshot'])
+    else:
+        # Player not in roster file - show warning but allow pick
+        embed.set_footer(text="⚠️ Player not found in roster database - verify spelling!")
     
     await ctx.send(embed=embed)
     
@@ -293,9 +372,74 @@ async def make_pick(ctx, *, player_info):
     next_round = draft_manager.get_current_round()
     next_pick_in_round = ((draft_manager.current_pick) % len(draft_manager.base_draft_order)) + 1
     
-    await ctx.send(f"🔔 <@{current_user_id}> - You're on the clock! (Round {next_round}, Pick {next_pick_in_round})\nMake your pick with `!pick PlayerName, TeamName`")
+    await ctx.send(f"🔔 <@{current_user_id}> - You're on the clock! (Round {next_round}, Pick {next_pick_in_round})\nMake your pick with `!pick PlayerName, TeamAbbrev`")
     if next_user_id:
         await ctx.send(f"⏭️ <@{next_user_id}> - You're on deck!")
+
+@bot.command(name='roster')
+async def show_roster(ctx, team_abbr: str, position: str = None):
+    """
+    Show available players from a team
+    Usage: !roster KC or !roster KC QB
+    """
+    team_abbr = team_abbr.upper()
+    
+    if not roster_manager.validate_team(team_abbr):
+        await ctx.send(f"❌ **{team_abbr}** is not playing this Thanksgiving weekend!\n"
+                      f"Valid teams: **{', '.join(VALID_TEAMS)}**")
+        return
+    
+    players = roster_manager.get_team_players(team_abbr, position)
+    
+    if not players:
+        if position:
+            await ctx.send(f"⚠️ No {position} players found for {team_abbr} (roster file may not be loaded)")
+        else:
+            await ctx.send(f"⚠️ No players found for {team_abbr} (roster file may not be loaded)")
+        return
+    
+    # Filter out already drafted players
+    available = []
+    drafted = []
+    for player in players:
+        if draft_manager.is_player_drafted(player['name'], team_abbr):
+            drafted.append(player)
+        else:
+            available.append(player)
+    
+    # Create embed
+    title = f"{team_abbr} Roster"
+    if position:
+        title += f" - {position}"
+    
+    embed = discord.Embed(
+        title=title,
+        color=discord.Color.gold()
+    )
+    
+    # Show available players
+    if available:
+        available_text = "\n".join([
+            f"✅ {p['name']} - {p['position']}" 
+            for p in available[:25]  # Limit to first 25
+        ])
+        if len(available) > 25:
+            available_text += f"\n... and {len(available) - 25} more"
+        embed.add_field(name="Available", value=available_text, inline=False)
+    
+    # Show drafted players
+    if drafted:
+        drafted_text = "\n".join([
+            f"❌ {p['name']} - {p['position']}" 
+            for p in drafted[:10]  # Limit to first 10
+        ])
+        if len(drafted) > 10:
+            drafted_text += f"\n... and {len(drafted) - 10} more"
+        embed.add_field(name="Already Drafted", value=drafted_text, inline=False)
+    
+    embed.set_footer(text=f"Total: {len(available)} available, {len(drafted)} drafted")
+    
+    await ctx.send(embed=embed)
 
 @bot.command(name='teams')
 async def show_teams(ctx):
@@ -430,7 +574,9 @@ async def help_command(ctx):
     
     commands_list = [
         ("!startdraft 5 @User1 @User2 ...", "Start snake draft with 5 rounds"),
-        ("!pick PlayerName, TeamName", "Make your draft pick"),
+        ("!pick PlayerName, KC", "Make your draft pick (use team abbreviation)"),
+        ("!roster KC", "Show all available players from Kansas City"),
+        ("!roster KC QB", "Show available QBs from Kansas City"),
         ("!myteam", "Show your current roster"),
         ("!teams", "Show all team rosters"),
         ("!setteamname Name", "Set your team name"),
@@ -439,6 +585,10 @@ async def help_command(ctx):
         ("!export", "Export data for scoring system"),
         ("!commands", "Show this help message")
     ]
+    
+    embed.add_field(name="\n🏈 Valid Teams (Thanksgiving 2025)", 
+                   value="GB, DET, KC, DAL, CIN, BAL, CHI, PHI", 
+                   inline=False)
     
     for cmd, desc in commands_list:
         embed.add_field(name=cmd, value=desc, inline=False)
