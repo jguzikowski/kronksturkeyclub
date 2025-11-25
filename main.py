@@ -347,7 +347,7 @@ async def draft_status(ctx):
     
     await ctx.send(embed=embed)
 
-@bot.command(name='help')
+@bot.command(name='commands')
 async def help_command(ctx):
     """Show all available commands"""
     embed = discord.Embed(
@@ -365,7 +365,7 @@ async def help_command(ctx):
         ("!status", "Show current draft status"),
         ("!undo", "Undo last pick (admin only)"),
         ("!export", "Export data for scoring system"),
-        ("!help", "Show this help message")
+        ("!commands", "Show this help message")
     ]
     
     for cmd, desc in commands_list:
