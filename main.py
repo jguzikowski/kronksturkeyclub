@@ -7,6 +7,7 @@ from datetime import datetime
 # Bot setup
 intents = discord.Intents.default()
 intents.message_content = True
+intents.reactions = True
 bot = commands.Bot(command_prefix='!', intents=intents)
 
 # Data storage
@@ -27,10 +28,22 @@ TEAM_NAMES = {
     'PHI': 'Philadelphia Eagles'
 }
 
+# Emoji numbers for selection
+NUMBER_EMOJIS = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟']
+
+# Position emojis for navigation
+POSITION_EMOJIS = {
+    '🏈': 'QB',
+    '🏃': 'RB', 
+    '🙌': 'WR',
+    '🤲': 'TE',
+    '🛡️': 'DEF'
+}
+
 class RosterManager:
     def __init__(self):
         self.players = []
-        self.player_lookup = {}
+        self.players_by_position = {}
         self.load_rosters()
     
     def load_rosters(self):
@@ -40,76 +53,162 @@ class RosterManager:
                 with open(ROSTER_FILE, 'r') as f:
                     self.players = json.load(f)
                 
-                # Create lookup dictionary
+                # Organize by position
                 for player in self.players:
-                    name_lower = player['name'].lower()
-                    team_lower = player['team'].lower()
-                    key = f"{name_lower}|{team_lower}"
-                    self.player_lookup[key] = player
+                    pos = player['position']
+                    if pos not in self.players_by_position:
+                        self.players_by_position[pos] = []
+                    self.players_by_position[pos].append(player)
                 
                 print(f"✅ Loaded {len(self.players)} players from rosters")
             except Exception as e:
                 print(f"⚠️ Could not load roster file: {e}")
-                print("   Players can still be drafted, but without validation/photos")
         else:
             print(f"⚠️ Roster file not found: {ROSTER_FILE}")
-            print("   Players can still be drafted, but team validation will be strict")
     
-    def validate_team(self, team_abbr):
-        """Check if team is playing this weekend"""
-        return team_abbr.upper() in VALID_TEAMS
-    
-    def find_player(self, player_name, team_abbr):
-        """Look up player in roster"""
-        key = f"{player_name.lower()}|{team_abbr.lower()}"
-        return self.player_lookup.get(key)
-    
-    def get_team_players(self, team_abbr, position=None):
-        """Get all players from a team, optionally filtered by position"""
-        team_players = [p for p in self.players if p['team'].upper() == team_abbr.upper()]
-        if position:
-            team_players = [p for p in team_players if p['position'].upper() == position.upper()]
-        return sorted(team_players, key=lambda x: x['name'])
+    def get_top_available(self, position, drafted_players, limit=10):
+        """Get top available players at a position"""
+        if position == 'DEF':
+            # For defense, return one entry per team
+            available_teams = []
+            for team in VALID_TEAMS:
+                player_key = f"defense|{team.lower()}"
+                if player_key not in drafted_players:
+                    available_teams.append({
+                        'name': f'{TEAM_NAMES[team]} Defense',
+                        'full_name': f'{TEAM_NAMES[team]} Defense',
+                        'position': 'DEF',
+                        'team': team,
+                        'team_name': TEAM_NAMES[team],
+                        'headshot': '',
+                        'jersey': ''
+                    })
+            return available_teams[:limit]
+        
+        available = []
+        for player in self.players_by_position.get(position, []):
+            player_key = f"{player['name'].lower()}|{player['team'].lower()}"
+            if player_key not in drafted_players:
+                available.append(player)
+        
+        return available[:limit]
 
 roster_manager = RosterManager()
 
 class DraftManager:
     def __init__(self):
-        self.base_draft_order = []  # Original order of users
-        self.draft_order = []  # Full snake draft order
+        self.base_draft_order = []
+        self.draft_order = []
         self.current_pick = 0
         self.num_rounds = 0
-        self.teams = {}  # {user_id: {name: str, players: []}}
-        self.all_picks = []  # History of all picks
+        self.teams = {}
+        self.all_picks = []
         self.is_active = False
         self.channel_id = None
-        self.drafted_players = set()  # Track all drafted players to prevent duplicates
+        self.drafted_players = set()
+        self.current_draft_message = None
+        self.current_position = 'QB'
         self.load_data()
     
-    def load_data(self):
-        """Load draft data from file if it exists"""
-        if os.path.exists(DRAFT_DATA_FILE):
-            try:
-                with open(DRAFT_DATA_FILE, 'r') as f:
-                    data = json.load(f)
-                    self.base_draft_order = data.get('base_draft_order', [])
-                    self.draft_order = data.get('draft_order', [])
-                    self.current_pick = data.get('current_pick', 0)
-                    self.num_rounds = data.get('num_rounds', 0)
-                    self.teams = data.get('teams', {})
-                    self.all_picks = data.get('all_picks', [])
-                    self.is_active = data.get('is_active', False)
-                    self.channel_id = data.get('channel_id')
-                    # Rebuild drafted players set
-                    self.drafted_players = set()
-                    for pick in self.all_picks:
-                        player_key = f"{pick['player_name'].lower()}|{pick['player_team'].lower()}"
-                        self.drafted_players.add(player_key)
-            except Exception as e:
-                print(f"Error loading data: {e}")
+    def start_draft(self, draft_order, num_rounds, channel_id):
+        self.base_draft_order = draft_order
+        self.num_rounds = num_rounds
+        self.channel_id = channel_id
+        self.is_active = True
+        self.current_pick = 0
+        self.all_picks = []
+        self.drafted_players = set()
+        self.current_position = 'QB'
+        
+        # Create snake draft order
+        self.draft_order = self.create_snake_order()
+        
+        # Initialize teams
+        self.teams = {user_id: {'players': [], 'team_name': f'Team {i+1}'} 
+                     for i, user_id in enumerate(draft_order)}
+        
+        self.save_data()
+    
+    def create_snake_order(self):
+        """Create snake draft order (1-2-3, 3-2-1, 1-2-3, etc.)"""
+        order = []
+        for round_num in range(self.num_rounds):
+            if round_num % 2 == 0:
+                order.extend(self.base_draft_order)
+            else:
+                order.extend(reversed(self.base_draft_order))
+        return order
+    
+    def get_current_user(self):
+        if self.current_pick < len(self.draft_order):
+            return self.draft_order[self.current_pick]
+        return None
+    
+    def get_next_user(self):
+        if self.current_pick + 1 < len(self.draft_order):
+            return self.draft_order[self.current_pick + 1]
+        return None
+    
+    def get_current_round(self):
+        return (self.current_pick // len(self.base_draft_order)) + 1
+    
+    def is_player_drafted(self, player_name, team_abbr):
+        key = f"{player_name.lower()}|{team_abbr.lower()}"
+        return key in self.drafted_players
+    
+    def add_pick(self, player_name, player_team, position):
+        if self.current_pick >= len(self.draft_order):
+            return None, "Draft is complete!"
+        
+        # Check if already drafted
+        player_key = f"{player_name.lower()}|{player_team.lower()}"
+        if player_key in self.drafted_players:
+            return None, f"{player_name} ({player_team}) has already been drafted!"
+        
+        user_id = self.draft_order[self.current_pick]
+        
+        pick_data = {
+            'player_name': player_name,
+            'player_team': player_team,
+            'position': position,
+            'pick_number': len(self.all_picks) + 1,
+            'round': self.get_current_round()
+        }
+        
+        self.teams[user_id]['players'].append(pick_data)
+        self.all_picks.append({
+            'user_id': user_id,
+            **pick_data
+        })
+        
+        self.drafted_players.add(player_key)
+        self.current_pick += 1
+        self.save_data()
+        
+        return user_id, None
+    
+    def undo_last_pick(self):
+        if not self.all_picks:
+            return False
+        
+        last_pick = self.all_picks.pop()
+        user_id = last_pick['user_id']
+        
+        # Remove from team
+        self.teams[user_id]['players'] = [
+            p for p in self.teams[user_id]['players'] 
+            if p['pick_number'] != last_pick['pick_number']
+        ]
+        
+        # Remove from drafted set
+        player_key = f"{last_pick['player_name'].lower()}|{last_pick['player_team'].lower()}"
+        self.drafted_players.discard(player_key)
+        
+        self.current_pick -= 1
+        self.save_data()
+        return True
     
     def save_data(self):
-        """Save draft data to file"""
         data = {
             'base_draft_order': self.base_draft_order,
             'draft_order': self.draft_order,
@@ -118,150 +217,104 @@ class DraftManager:
             'teams': self.teams,
             'all_picks': self.all_picks,
             'is_active': self.is_active,
-            'channel_id': self.channel_id
+            'channel_id': self.channel_id,
+            'drafted_players': list(self.drafted_players)
         }
         with open(DRAFT_DATA_FILE, 'w') as f:
             json.dump(data, f, indent=2)
     
-    def create_snake_order(self, base_order, num_rounds):
-        """Create snake draft order from base order"""
-        snake_order = []
-        for round_num in range(num_rounds):
-            if round_num % 2 == 0:
-                # Even rounds: normal order (0, 2, 4...)
-                snake_order.extend(base_order)
-            else:
-                # Odd rounds: reverse order (1, 3, 5...)
-                snake_order.extend(reversed(base_order))
-        return snake_order
-    
-    def start_draft(self, base_order, num_rounds, channel_id):
-        """Initialize a new snake draft"""
-        self.base_draft_order = base_order
-        self.num_rounds = num_rounds
-        self.draft_order = self.create_snake_order(base_order, num_rounds)
-        self.current_pick = 0
-        self.teams = {user_id: {'name': f'Team {i+1}', 'players': []} 
-                      for i, user_id in enumerate(base_order)}
-        self.all_picks = []
-        self.drafted_players = set()
-        self.is_active = True
-        self.channel_id = channel_id
-        self.save_data()
-    
-    def is_player_drafted(self, player_name, player_team):
-        """Check if a player has already been drafted"""
-        player_key = f"{player_name.lower()}|{player_team.lower()}"
-        return player_key in self.drafted_players
-    
-    def add_pick(self, player_name, player_team):
-        """Record a draft pick"""
-        if not self.is_active or self.current_pick >= len(self.draft_order):
-            return None, "Draft is complete!"
-        
-        # Check for duplicate
-        if self.is_player_drafted(player_name, player_team):
-            return None, f"{player_name} ({player_team}) has already been drafted!"
-        
-        user_id = self.draft_order[self.current_pick]
-        pick_info = {
-            'player_name': player_name,
-            'player_team': player_team,
-            'pick_number': len(self.all_picks) + 1,
-            'timestamp': datetime.now().isoformat()
-        }
-        
-        self.teams[user_id]['players'].append(pick_info)
-        self.all_picks.append({
-            'user_id': user_id,
-            **pick_info
-        })
-        
-        # Add to drafted players set
-        player_key = f"{player_name.lower()}|{player_team.lower()}"
-        self.drafted_players.add(player_key)
-        
-        self.current_pick += 1
-        self.save_data()
-        
-        return user_id, None
-    
-    def get_current_user(self):
-        """Get the user ID who is currently on the clock"""
-        if not self.is_active or self.current_pick >= len(self.draft_order):
-            return None
-        return self.draft_order[self.current_pick]
-    
-    def get_next_user(self):
-        """Get the user ID who is on deck"""
-        next_pick = self.current_pick + 1
-        if not self.is_active or next_pick >= len(self.draft_order):
-            return None
-        return self.draft_order[next_pick]
-    
-    def undo_last_pick(self):
-        """Undo the last draft pick"""
-        if not self.all_picks:
-            return False
-        
-        last_pick = self.all_picks.pop()
-        user_id = last_pick['user_id']
-        self.teams[user_id]['players'].pop()
-        
-        # Remove from drafted players set
-        player_key = f"{last_pick['player_name'].lower()}|{last_pick['player_team'].lower()}"
-        self.drafted_players.discard(player_key)
-        
-        self.current_pick -= 1
-        self.save_data()
-        return True
-    
-    def get_current_round(self):
-        """Get the current round number"""
-        if not self.base_draft_order:
-            return 0
-        return (self.current_pick // len(self.base_draft_order)) + 1
-    
-    def export_teams_for_scoring(self):
-        """Export team data in format for scoring system"""
-        export_data = []
-        for user_id, team_data in self.teams.items():
-            export_data.append({
-                'team_name': team_data['name'],
-                'user_id': user_id,
-                'players': [
-                    {
-                        'name': p['player_name'],
-                        'team': p['player_team']
-                    }
-                    for p in team_data['players']
-                ]
-            })
-        return export_data
+    def load_data(self):
+        if os.path.exists(DRAFT_DATA_FILE):
+            try:
+                with open(DRAFT_DATA_FILE, 'r') as f:
+                    data = json.load(f)
+                self.base_draft_order = data.get('base_draft_order', [])
+                self.draft_order = data.get('draft_order', [])
+                self.current_pick = data.get('current_pick', 0)
+                self.num_rounds = data.get('num_rounds', 0)
+                self.teams = data.get('teams', {})
+                self.all_picks = data.get('all_picks', [])
+                self.is_active = data.get('is_active', False)
+                self.channel_id = data.get('channel_id')
+                self.drafted_players = set(data.get('drafted_players', []))
+            except Exception as e:
+                print(f"Error loading draft data: {e}")
 
 draft_manager = DraftManager()
 
 @bot.event
 async def on_ready():
+    print(f'Starting bot...')
     print(f'{bot.user} has connected to Discord!')
     print(f'Bot is ready in {len(bot.guilds)} guild(s)')
 
+async def create_draft_board(ctx, position):
+    """Create visual draft board with top 10 players"""
+    current_user_id = draft_manager.get_current_user()
+    current_round = draft_manager.get_current_round()
+    pick_in_round = ((draft_manager.current_pick) % len(draft_manager.base_draft_order)) + 1
+    
+    # Get top available players
+    available_players = roster_manager.get_top_available(
+        position, 
+        draft_manager.drafted_players,
+        limit=10
+    )
+    
+    if not available_players:
+        embed = discord.Embed(
+            title=f"❌ No {position} Available",
+            description="All players at this position have been drafted. Try another position!",
+            color=discord.Color.red()
+        )
+        return embed, []
+    
+    # Create embed
+    embed = discord.Embed(
+        title=f"🏈 DRAFT BOARD - {position}",
+        description=f"**Round {current_round}, Pick {pick_in_round}**\n<@{current_user_id}> is on the clock!\n\n**React with a number to draft:**",
+        color=discord.Color.blue()
+    )
+    
+    # Add players
+    for i, player in enumerate(available_players[:10]):
+        emoji = NUMBER_EMOJIS[i]
+        name = player['name']
+        team = player['team']
+        pos = player['position']
+        
+        embed.add_field(
+            name=f"{emoji} {name}",
+            value=f"{pos} - {team}",
+            inline=True
+        )
+        
+        # Add thumbnail for first player if available
+        if i == 0 and player.get('headshot'):
+            embed.set_thumbnail(url=player['headshot'])
+    
+    # Add position navigation
+    embed.add_field(
+        name="\n🔄 Switch Position",
+        value="🏈 QB | 🏃 RB | 🙌 WR | 🤲 TE | 🛡️ DEF",
+        inline=False
+    )
+    
+    embed.set_footer(text=f"Pick #{draft_manager.current_pick + 1} of {len(draft_manager.draft_order)}")
+    
+    return embed, available_players
+
 @bot.command(name='startdraft')
 async def start_draft(ctx, rounds: int, *user_mentions):
-    """
-    Start a new snake draft with the specified user order and number of rounds
-    Usage: !startdraft 5 @User1 @User2 @User3 ...
-    (This creates a 5-round snake draft)
-    """
+    """Start a new visual draft"""
     if not user_mentions:
-        await ctx.send("❌ Please provide number of rounds and mention users in draft order:\n`!startdraft 5 @User1 @User2 @User3`")
+        await ctx.send("❌ Please provide number of rounds and mention users:\n`!startdraft 5 @User1 @User2 @User3`")
         return
     
     if rounds < 1 or rounds > 20:
         await ctx.send("❌ Number of rounds must be between 1 and 20!")
         return
     
-    # Extract user IDs from mentions
     draft_order = [str(user.id) for user in ctx.message.mentions]
     
     if len(draft_order) < 2:
@@ -270,176 +323,147 @@ async def start_draft(ctx, rounds: int, *user_mentions):
     
     draft_manager.start_draft(draft_order, rounds, ctx.channel.id)
     
-    # Create draft announcement
+    # Create initial announcement
     order_text = "\n".join([f"{i+1}. <@{uid}>" for i, uid in enumerate(draft_order)])
     
-    total_picks = len(draft_order) * rounds
-    
     embed = discord.Embed(
-        title="🏈 SNAKE DRAFT STARTED!",
-        description=f"**Draft Order (Round 1):**\n{order_text}",
+        title="🏈 VISUAL DRAFT STARTED!",
+        description=f"**Draft Order:**\n{order_text}\n\n**{rounds} rounds** • **Snake format**",
         color=discord.Color.green()
     )
-    embed.add_field(name="Number of Rounds", value=str(rounds), inline=True)
-    embed.add_field(name="Total Picks", value=str(total_picks), inline=True)
-    embed.add_field(name="Current Pick", value="1", inline=True)
-    embed.set_footer(text="🐍 Snake format: Order reverses each round!")
+    embed.set_footer(text="Starting draft board...")
     
     await ctx.send(embed=embed)
     
-    # Ping first user
-    current_user_id = draft_manager.get_current_user()
-    next_user_id = draft_manager.get_next_user()
+    # Show first draft board
+    embed, players = await create_draft_board(ctx, 'QB')
+    message = await ctx.send(embed=embed)
     
-    await ctx.send(f"🔔 <@{current_user_id}> - You're on the clock! (Round 1, Pick 1)\nMake your pick with `!pick PlayerName, TeamName`")
-    if next_user_id:
-        await ctx.send(f"⏭️ <@{next_user_id}> - You're on deck!")
+    # Add reaction options
+    for i in range(min(len(players), 10)):
+        await message.add_reaction(NUMBER_EMOJIS[i])
+    
+    # Add position navigation
+    for emoji in POSITION_EMOJIS.keys():
+        await message.add_reaction(emoji)
+    
+    draft_manager.current_draft_message = message.id
 
-@bot.command(name='pick')
-async def make_pick(ctx, *, player_info):
-    """
-    Make a draft pick
-    Usage: !pick Patrick Mahomes, KC
-    """
+@bot.event
+async def on_reaction_add(reaction, user):
+    """Handle draft selections via reactions"""
+    # Ignore bot reactions
+    if user.bot:
+        return
+    
+    # Check if this is the active draft message
     if not draft_manager.is_active:
-        await ctx.send("❌ No active draft! Start one with `!startdraft`")
         return
     
+    if draft_manager.current_draft_message != reaction.message.id:
+        return
+    
+    # Check if it's the correct user's turn
     current_user_id = draft_manager.get_current_user()
-    
-    if str(ctx.author.id) != current_user_id:
-        await ctx.send(f"❌ It's not your turn! <@{current_user_id}> is on the clock.")
+    if str(user.id) != current_user_id:
+        await reaction.message.channel.send(f"❌ <@{user.id}> - It's not your turn! <@{current_user_id}> is on the clock.")
+        await reaction.remove(user)
         return
     
-    # Parse player info
-    if ',' not in player_info:
-        await ctx.send("❌ Format: `!pick PlayerName, TeamAbbreviation` (e.g., `!pick Patrick Mahomes, KC`)")
+    emoji = str(reaction.emoji)
+    
+    # Handle position switching
+    if emoji in POSITION_EMOJIS:
+        draft_manager.current_position = POSITION_EMOJIS[emoji]
+        
+        # Update board
+        embed, players = await create_draft_board(reaction.message.channel, draft_manager.current_position)
+        await reaction.message.edit(embed=embed)
+        
+        # Clear and re-add reactions
+        await reaction.message.clear_reactions()
+        for i in range(min(len(players), 10)):
+            await reaction.message.add_reaction(NUMBER_EMOJIS[i])
+        for pos_emoji in POSITION_EMOJIS.keys():
+            await reaction.message.add_reaction(pos_emoji)
+        
         return
     
-    player_name, player_team = [x.strip() for x in player_info.split(',', 1)]
-    
-    # Validate team is playing this weekend
-    if not roster_manager.validate_team(player_team):
-        await ctx.send(f"❌ **{player_team}** is not playing this Thanksgiving weekend!\n"
-                      f"Valid teams: **{', '.join(VALID_TEAMS)}**")
-        return
-    
-    # Look up player in roster
-    player_data = roster_manager.find_player(player_name, player_team)
-    
-    # Record the pick
-    user_id, error = draft_manager.add_pick(player_name, player_team)
-    
-    # Check for errors (duplicate or draft complete)
-    if error:
-        await ctx.send(f"❌ {error}")
-        return
-    
-    pick_number = len(draft_manager.all_picks)
-    current_round = draft_manager.get_current_round()
-    pick_in_round = ((pick_number - 1) % len(draft_manager.base_draft_order)) + 1
-    
-    # Create announcement embed with player photo if available
-    embed = discord.Embed(
-        title=f"Pick #{pick_number} (Round {current_round}, Pick {pick_in_round})",
-        description=f"<@{ctx.author.id}> selects:",
-        color=discord.Color.blue()
-    )
-    embed.add_field(name="Player", value=player_name, inline=True)
-    embed.add_field(name="Team", value=player_team, inline=True)
-    
-    # Add position and photo if we found the player
-    if player_data:
-        embed.add_field(name="Position", value=player_data.get('position', 'N/A'), inline=True)
-        if player_data.get('headshot'):
-            embed.set_thumbnail(url=player_data['headshot'])
-    else:
-        # Player not in roster file - show warning but allow pick
-        embed.set_footer(text="⚠️ Player not found in roster database - verify spelling!")
-    
-    await ctx.send(embed=embed)
-    
-    # Check if draft is complete
-    if draft_manager.current_pick >= len(draft_manager.draft_order):
-        await ctx.send("🎉 **DRAFT COMPLETE!** Use `!teams` to see all rosters or `!export` to get data for scoring.")
-        draft_manager.is_active = False
-        draft_manager.save_data()
-        return
-    
-    # Ping next user
-    current_user_id = draft_manager.get_current_user()
-    next_user_id = draft_manager.get_next_user()
-    next_round = draft_manager.get_current_round()
-    next_pick_in_round = ((draft_manager.current_pick) % len(draft_manager.base_draft_order)) + 1
-    
-    await ctx.send(f"🔔 <@{current_user_id}> - You're on the clock! (Round {next_round}, Pick {next_pick_in_round})\nMake your pick with `!pick PlayerName, TeamAbbrev`")
-    if next_user_id:
-        await ctx.send(f"⏭️ <@{next_user_id}> - You're on deck!")
-
-@bot.command(name='roster')
-async def show_roster(ctx, team_abbr: str, position: str = None):
-    """
-    Show available players from a team
-    Usage: !roster KC or !roster KC QB
-    """
-    team_abbr = team_abbr.upper()
-    
-    if not roster_manager.validate_team(team_abbr):
-        await ctx.send(f"❌ **{team_abbr}** is not playing this Thanksgiving weekend!\n"
-                      f"Valid teams: **{', '.join(VALID_TEAMS)}**")
-        return
-    
-    players = roster_manager.get_team_players(team_abbr, position)
-    
-    if not players:
-        if position:
-            await ctx.send(f"⚠️ No {position} players found for {team_abbr} (roster file may not be loaded)")
-        else:
-            await ctx.send(f"⚠️ No players found for {team_abbr} (roster file may not be loaded)")
-        return
-    
-    # Filter out already drafted players
-    available = []
-    drafted = []
-    for player in players:
-        if draft_manager.is_player_drafted(player['name'], team_abbr):
-            drafted.append(player)
-        else:
-            available.append(player)
-    
-    # Create embed
-    title = f"{team_abbr} Roster"
-    if position:
-        title += f" - {position}"
-    
-    embed = discord.Embed(
-        title=title,
-        color=discord.Color.gold()
-    )
-    
-    # Show available players
-    if available:
-        available_text = "\n".join([
-            f"✅ {p['name']} - {p['position']}" 
-            for p in available[:25]  # Limit to first 25
-        ])
-        if len(available) > 25:
-            available_text += f"\n... and {len(available) - 25} more"
-        embed.add_field(name="Available", value=available_text, inline=False)
-    
-    # Show drafted players
-    if drafted:
-        drafted_text = "\n".join([
-            f"❌ {p['name']} - {p['position']}" 
-            for p in drafted[:10]  # Limit to first 10
-        ])
-        if len(drafted) > 10:
-            drafted_text += f"\n... and {len(drafted) - 10} more"
-        embed.add_field(name="Already Drafted", value=drafted_text, inline=False)
-    
-    embed.set_footer(text=f"Total: {len(available)} available, {len(drafted)} drafted")
-    
-    await ctx.send(embed=embed)
+    # Handle player selection
+    if emoji in NUMBER_EMOJIS:
+        player_index = NUMBER_EMOJIS.index(emoji)
+        
+        # Get available players
+        available_players = roster_manager.get_top_available(
+            draft_manager.current_position,
+            draft_manager.drafted_players,
+            limit=10
+        )
+        
+        if player_index >= len(available_players):
+            await reaction.message.channel.send("❌ Invalid selection!")
+            await reaction.remove(user)
+            return
+        
+        selected_player = available_players[player_index]
+        
+        # Make the pick
+        user_id, error = draft_manager.add_pick(
+            selected_player['name'],
+            selected_player['team'],
+            selected_player['position']
+        )
+        
+        if error:
+            await reaction.message.channel.send(f"❌ {error}")
+            await reaction.remove(user)
+            return
+        
+        # Announce the pick
+        pick_number = len(draft_manager.all_picks)
+        current_round = draft_manager.get_current_round()
+        pick_in_round = ((pick_number - 1) % len(draft_manager.base_draft_order)) + 1
+        
+        embed = discord.Embed(
+            title=f"✅ Pick #{pick_number} (Round {current_round}, Pick {pick_in_round})",
+            description=f"<@{user.id}> selects:",
+            color=discord.Color.green()
+        )
+        embed.add_field(name="Player", value=selected_player['name'], inline=True)
+        embed.add_field(name="Position", value=selected_player['position'], inline=True)
+        embed.add_field(name="Team", value=selected_player['team'], inline=True)
+        
+        if selected_player.get('headshot'):
+            embed.set_thumbnail(url=selected_player['headshot'])
+        
+        await reaction.message.channel.send(embed=embed)
+        
+        # Check if draft is complete
+        if draft_manager.current_pick >= len(draft_manager.draft_order):
+            await reaction.message.channel.send("🎉 **DRAFT COMPLETE!** Use `!teams` to see all rosters or `!export` to get data for scoring.")
+            draft_manager.is_active = False
+            draft_manager.save_data()
+            return
+        
+        # Show next draft board
+        draft_manager.current_position = 'QB'  # Reset to QB
+        embed, players = await create_draft_board(reaction.message.channel, 'QB')
+        new_message = await reaction.message.channel.send(embed=embed)
+        
+        # Add reactions
+        for i in range(min(len(players), 10)):
+            await new_message.add_reaction(NUMBER_EMOJIS[i])
+        for pos_emoji in POSITION_EMOJIS.keys():
+            await new_message.add_reaction(pos_emoji)
+        
+        draft_manager.current_draft_message = new_message.id
+        
+        # Ping next user
+        next_user_id = draft_manager.get_current_user()
+        next_round = draft_manager.get_current_round()
+        next_pick_in_round = ((draft_manager.current_pick) % len(draft_manager.base_draft_order)) + 1
+        
+        await reaction.message.channel.send(f"🔔 <@{next_user_id}> - You're on the clock! (Round {next_round}, Pick {next_pick_in_round})")
 
 @bot.command(name='teams')
 async def show_teams(ctx):
@@ -450,16 +474,16 @@ async def show_teams(ctx):
     
     for user_id, team_data in draft_manager.teams.items():
         players_text = "\n".join([
-            f"{i+1}. {p['player_name']} ({p['player_team']})" 
+            f"{i+1}. {p['player_name']} ({p['position']} - {p['player_team']})" 
             for i, p in enumerate(team_data['players'])
         ]) or "No picks yet"
         
         embed = discord.Embed(
-            title=f"<@{user_id}>'s Team",
-            description=players_text,
-            color=discord.Color.gold()
+            title=f"🏈 {team_data['team_name']}",
+            description=f"**Manager:** <@{user_id}>\n\n{players_text}",
+            color=discord.Color.blue()
         )
-        embed.set_footer(text=f"Total Players: {len(team_data['players'])}")
+        embed.set_footer(text=f"{len(team_data['players'])} players")
         
         await ctx.send(embed=embed)
 
@@ -469,140 +493,53 @@ async def show_my_team(ctx):
     user_id = str(ctx.author.id)
     
     if user_id not in draft_manager.teams:
-        await ctx.send("❌ You're not in this draft!")
+        await ctx.send("❌ You're not in the current draft!")
         return
     
     team_data = draft_manager.teams[user_id]
     players_text = "\n".join([
-        f"{i+1}. {p['player_name']} ({p['player_team']})" 
+        f"{i+1}. {p['player_name']} ({p['position']} - {p['player_team']})" 
         for i, p in enumerate(team_data['players'])
     ]) or "No picks yet"
     
     embed = discord.Embed(
-        title="Your Team",
+        title=f"🏈 {team_data['team_name']}",
         description=players_text,
-        color=discord.Color.purple()
+        color=discord.Color.blue()
     )
-    embed.set_footer(text=f"Total Players: {len(team_data['players'])}")
+    embed.set_footer(text=f"{len(team_data['players'])} players")
     
     await ctx.send(embed=embed)
 
-@bot.command(name='undo')
-async def undo_pick(ctx):
-    """Undo the last draft pick (admin only)"""
-    if not ctx.author.guild_permissions.administrator:
-        await ctx.send("❌ Only administrators can undo picks!")
-        return
-    
-    if draft_manager.undo_last_pick():
-        await ctx.send("✅ Last pick undone!")
-        
-        # Notify current picker
-        current_user_id = draft_manager.get_current_user()
-        if current_user_id:
-            await ctx.send(f"🔔 <@{current_user_id}> - You're back on the clock!")
-    else:
-        await ctx.send("❌ No picks to undo!")
-
 @bot.command(name='export')
 async def export_data(ctx):
-    """Export draft data for the scoring system"""
+    """Export draft data as JSON for scoring"""
     if not draft_manager.teams:
         await ctx.send("❌ No draft data available!")
         return
     
-    export_data = draft_manager.export_teams_for_scoring()
+    export_data = {
+        'draft_date': datetime.now().isoformat(),
+        'teams': []
+    }
     
-    # Save to file
-    filename = f'draft_export_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json'
-    with open(filename, 'w') as f:
-        json.dump(export_data, f, indent=2)
+    for user_id, team_data in draft_manager.teams.items():
+        export_data['teams'].append({
+            'team_name': team_data['team_name'],
+            'user_id': user_id,
+            'players': team_data['players']
+        })
     
-    await ctx.send(
-        "✅ Draft data exported! Copy this data into the scoring system:",
-        file=discord.File(filename)
-    )
+    json_str = json.dumps(export_data, indent=2)
+    
+    with open('draft_export.json', 'w') as f:
+        f.write(json_str)
+    
+    await ctx.send("📤 Draft data exported!", file=discord.File('draft_export.json'))
 
-@bot.command(name='setteamname')
-async def set_team_name(ctx, *, team_name):
-    """Set your team name"""
-    user_id = str(ctx.author.id)
-    
-    if user_id not in draft_manager.teams:
-        await ctx.send("❌ You're not in this draft!")
-        return
-    
-    draft_manager.teams[user_id]['name'] = team_name
-    draft_manager.save_data()
-    
-    await ctx.send(f"✅ Team name updated to: **{team_name}**")
-
-@bot.command(name='status')
-async def draft_status(ctx):
-    """Show current draft status"""
-    if not draft_manager.is_active:
-        await ctx.send("❌ No active draft!")
-        return
-    
-    current_user_id = draft_manager.get_current_user()
-    next_user_id = draft_manager.get_next_user()
-    total_picks = len(draft_manager.draft_order)
-    picks_made = len(draft_manager.all_picks)
-    current_round = draft_manager.get_current_round()
-    
-    embed = discord.Embed(
-        title="📊 Draft Status",
-        color=discord.Color.blue()
-    )
-    embed.add_field(name="Current Round", value=f"{current_round}/{draft_manager.num_rounds}", inline=True)
-    embed.add_field(name="Picks Made", value=f"{picks_made}/{total_picks}", inline=True)
-    embed.add_field(name="Format", value="🐍 Snake", inline=True)
-    embed.add_field(name="On the Clock", value=f"<@{current_user_id}>", inline=False)
-    if next_user_id:
-        embed.add_field(name="On Deck", value=f"<@{next_user_id}>", inline=False)
-    
-    await ctx.send(embed=embed)
-
-@bot.command(name='commands')
-async def help_command(ctx):
-    """Show all available commands"""
-    embed = discord.Embed(
-        title="🏈 Fantasy Draft Bot Commands",
-        description="Here are all available commands:",
-        color=discord.Color.green()
-    )
-    
-    commands_list = [
-        ("!startdraft 5 @User1 @User2 ...", "Start snake draft with 5 rounds"),
-        ("!pick PlayerName, KC", "Make your draft pick (use team abbreviation)"),
-        ("!roster KC", "Show all available players from Kansas City"),
-        ("!roster KC QB", "Show available QBs from Kansas City"),
-        ("!myteam", "Show your current roster"),
-        ("!teams", "Show all team rosters"),
-        ("!setteamname Name", "Set your team name"),
-        ("!status", "Show current draft status"),
-        ("!undo", "Undo last pick (admin only)"),
-        ("!export", "Export data for scoring system"),
-        ("!commands", "Show this help message")
-    ]
-    
-    embed.add_field(name="\n🏈 Valid Teams (Thanksgiving 2025)", 
-                   value="GB, DET, KC, DAL, CIN, BAL, CHI, PHI", 
-                   inline=False)
-    
-    for cmd, desc in commands_list:
-        embed.add_field(name=cmd, value=desc, inline=False)
-    
-    await ctx.send(embed=embed)
-
-# Run the bot
-if __name__ == "__main__":
-    print("Starting bot...")
-    print("Make sure to set your DISCORD_BOT_TOKEN environment variable!")
-    
-    token = os.getenv('DISCORD_BOT_TOKEN')
-    if not token:
-        print("ERROR: No DISCORD_BOT_TOKEN found in environment variables!")
-        print("Set it with: export DISCORD_BOT_TOKEN='your_token_here'")
-    else:
-        bot.run(token)
+# Run bot
+token = os.getenv('DISCORD_BOT_TOKEN')
+if not token:
+    print("❌ Error: DISCORD_BOT_TOKEN not found in environment variables!")
+else:
+    bot.run(token)
