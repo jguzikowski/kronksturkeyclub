@@ -322,25 +322,20 @@ async def create_draft_board(ctx, position):
 @bot.command(name='setdraftorder')
 async def set_draft_order(ctx, *user_mentions):
     """Set and save a specific base draft order"""
-    ordered_mentions = []
-    seen = set()
-    for uid in ctx.message.raw_mentions:
-        if uid not in seen:
-            ordered_mentions.append(str(uid))
-            seen.add(uid)
-
-    if not ordered_mentions:
+    if not user_mentions:
         await ctx.send("❌ Please mention users in the desired order: `!setdraftorder @User1 @User2 @User3`")
         return
 
-    if len(ordered_mentions) < 2:
+    draft_order = [str(user.id) for user in ctx.message.mentions]
+
+    if len(draft_order) < 2:
         await ctx.send("❌ Need at least 2 users for a draft order!")
         return
 
-    draft_manager.base_draft_order = ordered_mentions
+    draft_manager.base_draft_order = draft_order
     draft_manager.save_data()
 
-    order_text = "\n".join([f"{i+1}. <@{uid}>" for i, uid in enumerate(ordered_mentions)])
+    order_text = "\n".join([f"{i+1}. <@{uid}>" for i, uid in enumerate(draft_order)])
     embed = discord.Embed(
         title="✅ Draft Order Saved",
         description=f"The base draft order has been set:\n{order_text}\n\nUse `!startdraft` to start using this order, or provide mentions to override it.",
@@ -368,15 +363,8 @@ async def start_draft(ctx, *args):
             pass
 
     # Draft order can be provided directly or pulled from a saved order
-    ordered_mentions = []
-    seen = set()
-    for uid in ctx.message.raw_mentions:
-        if uid not in seen:
-            ordered_mentions.append(str(uid))
-            seen.add(uid)
-
-    if ordered_mentions:
-        draft_order = ordered_mentions
+    if ctx.message.mentions:
+        draft_order = [str(user.id) for user in ctx.message.mentions]
     else:
         draft_order = draft_manager.base_draft_order
 
