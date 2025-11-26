@@ -333,7 +333,21 @@ async def start_draft(ctx, rounds: int, *user_mentions):
         await ctx.send("❌ Number of rounds must be between 1 and 20!")
         return
     
-    draft_order = [str(user.id) for user in ctx.message.mentions]
+    # IMPORTANT: Extract user IDs in the order they appear in the message
+    # ctx.message.mentions is sorted by Discord ID, not message order
+    mentioned_users = {}
+    for user in ctx.message.mentions:
+        mentioned_users[user.id] = user
+    
+    # Parse the message to get mentions in order
+    import re
+    mention_pattern = re.compile(r'<@!?(\d+)>')
+    draft_order = []
+    
+    for match in mention_pattern.finditer(ctx.message.content):
+        user_id = int(match.group(1))
+        if user_id in mentioned_users and str(user_id) not in draft_order:
+            draft_order.append(str(user_id))
     
     if len(draft_order) < 2:
         await ctx.send("❌ Need at least 2 users for a draft!")
