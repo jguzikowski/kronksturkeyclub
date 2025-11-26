@@ -28,6 +28,9 @@ POSITION_EMOJIS = {
     '🤲': 'TE'
 }
 
+# Roster layout for positional displays
+ROSTER_POSITIONS = ['QB', 'RB', 'WR', 'TE']
+
 class RosterManager:
     def __init__(self):
         self.players = []
@@ -219,6 +222,40 @@ class DraftManager:
                 print(f"Error loading draft data: {e}")
 
 draft_manager = DraftManager()
+
+
+def format_team_roster(players):
+    """Format a team's picks into positional roster lines."""
+    sorted_players = sorted(players, key=lambda p: p.get('pick_number', 0))
+
+    slots = {pos: None for pos in ROSTER_POSITIONS}
+    flex_candidates = []
+
+    for pick in sorted_players:
+        pos = pick.get('position')
+        if pos in slots and slots[pos] is None:
+            slots[pos] = pick
+        else:
+            flex_candidates.append(pick)
+
+    lines = []
+    for pos in ROSTER_POSITIONS:
+        pick = slots[pos]
+        if pick:
+            lines.append(f"{pos}: {pick['player_name']} ({pick['position']} - {pick['player_team']})")
+        else:
+            lines.append(f"{pos}: —")
+
+    if flex_candidates:
+        flex_text = " / ".join(
+            [f"{p['player_name']} ({p['position']} - {p['player_team']})" for p in flex_candidates]
+        )
+    else:
+        flex_text = "—"
+
+    lines.append(f"Flex: {flex_text}")
+
+    return "\n".join(lines)
 
 @bot.event
 async def on_ready():
@@ -509,18 +546,15 @@ async def show_teams(ctx):
         return
     
     for user_id, team_data in draft_manager.teams.items():
-        players_text = "\n".join([
-            f"{i+1}. {p['player_name']} ({p['position']} - {p['player_team']})" 
-            for i, p in enumerate(team_data['players'])
-        ]) or "No picks yet"
-        
+        roster_text = format_team_roster(team_data['players']) if team_data['players'] else "No picks yet"
+
         embed = discord.Embed(
             title=f"🏈 {team_data['team_name']}",
-            description=f"**Manager:** <@{user_id}>\n\n{players_text}",
+            description=f"**Manager:** <@{user_id}>\n\n{roster_text}",
             color=discord.Color.blue()
         )
         embed.set_footer(text=f"{len(team_data['players'])} players")
-        
+
         await ctx.send(embed=embed)
 
 @bot.command(name='myteam')
@@ -533,14 +567,11 @@ async def show_my_team(ctx):
         return
     
     team_data = draft_manager.teams[user_id]
-    players_text = "\n".join([
-        f"{i+1}. {p['player_name']} ({p['position']} - {p['player_team']})" 
-        for i, p in enumerate(team_data['players'])
-    ]) or "No picks yet"
+    roster_text = format_team_roster(team_data['players']) if team_data['players'] else "No picks yet"
     
     embed = discord.Embed(
         title=f"🏈 {team_data['team_name']}",
-        description=players_text,
+        description=roster_text,
         color=discord.Color.blue()
     )
     embed.set_footer(text=f"{len(team_data['players'])} players")
