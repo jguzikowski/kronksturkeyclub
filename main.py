@@ -36,8 +36,7 @@ POSITION_EMOJIS = {
     '🏈': 'QB',
     '🏃': 'RB', 
     '🙌': 'WR',
-    '🤲': 'TE',
-    '🛡️': 'DEF'
+    '🤲': 'TE'
 }
 
 class RosterManager:
@@ -68,30 +67,6 @@ class RosterManager:
     
     def get_top_available(self, position, drafted_players, limit=10):
         """Get top available players at a position, sorted by fantasy rank"""
-        if position == 'DEF':
-            # For defense, return one entry per team, sorted by defensive ranking
-            team_def_ranks = {
-                'DET': 1, 'BAL': 2, 'GB': 3, 'PHI': 4,
-                'KC': 6, 'DAL': 10, 'CIN': 12, 'CHI': 15
-            }
-            available_teams = []
-            for team in VALID_TEAMS:
-                player_key = f"defense|{team.lower()}"
-                if player_key not in drafted_players:
-                    available_teams.append({
-                        'name': f'{TEAM_NAMES[team]} Defense',
-                        'full_name': f'{TEAM_NAMES[team]} Defense',
-                        'position': 'DEF',
-                        'team': team,
-                        'team_name': TEAM_NAMES[team],
-                        'headshot': '',
-                        'jersey': '',
-                        'fantasy_rank': team_def_ranks.get(team, 99)
-                    })
-            # Sort by defense ranking
-            available_teams.sort(key=lambda x: x['fantasy_rank'])
-            return available_teams[:limit]
-        
         available = []
         for player in self.players_by_position.get(position, []):
             player_key = f"{player['name'].lower()}|{player['team'].lower()}"
@@ -170,11 +145,8 @@ class DraftManager:
         if self.current_pick >= len(self.draft_order):
             return None, "Draft is complete!"
         
-        # Create player key - special handling for defense
-        if position == 'DEF':
-            player_key = f"defense|{player_team.lower()}"
-        else:
-            player_key = f"{player_name.lower()}|{player_team.lower()}"
+        # Create player key
+        player_key = f"{player_name.lower()}|{player_team.lower()}"
         
         # Check if already drafted
         if player_key in self.drafted_players:
@@ -215,11 +187,8 @@ class DraftManager:
             if p['pick_number'] != last_pick['pick_number']
         ]
         
-        # Remove from drafted set - handle defense special case
-        if last_pick['position'] == 'DEF':
-            player_key = f"defense|{last_pick['player_team'].lower()}"
-        else:
-            player_key = f"{last_pick['player_name'].lower()}|{last_pick['player_team'].lower()}"
+        # Remove from drafted set
+        player_key = f"{last_pick['player_name'].lower()}|{last_pick['player_team'].lower()}"
         self.drafted_players.discard(player_key)
         
         self.current_pick -= 1
@@ -314,7 +283,7 @@ async def create_draft_board(ctx, position):
     # Add position navigation
     embed.add_field(
         name="\n🔄 Switch Position",
-        value="🏈 QB | 🏃 RB | 🙌 WR | 🤲 TE | 🛡️ DEF",
+        value="🏈 QB | 🏃 RB | 🙌 WR | 🤲 TE",
         inline=False
     )
     
@@ -571,6 +540,97 @@ async def export_data(ctx):
     await ctx.send("📤 Draft data exported!", file=discord.File('draft_export.json'))
 
 @bot.command(name='undo')
+async def undo_command(ctx):
+    """Undo the last pick"""
+    if not draft_manager.draft_active:
+        await ctx.send("❌ No active draft to undo!")
+        return
+    
+    if not draft_manager.all_picks:
+        await ctx.send("❌ No picks to undo!")
+        return
+    
+    last_pick = draft_manager.all_picks[-1]
+    user_id = last_pick['user_id']
+    player_name = last_pick['player_name']
+    
+    if draft_manager.undo_last_pick():
+        user = await bot.fetch_user(user_id)
+        await ctx.send(f"✅ Undid pick: **{player_name}** removed from {user.mention}'s team")
+        
+        # Show who's on the clock now
+        if draft_manager.current_pick < len(draft_manager.draft_order):
+            current_user_id = draft_manager.draft_order[draft_manager.current_pick]
+            current_user = await bot.fetch_user(current_user_id)
+            await ctx.send(f"⏰ **{current_user.mention}** is back on the clock!")
+    else:
+        await ctx.send("❌ Failed to undo pick")
+
+@bot.command(name='manualpick')
+async def manual_pick_command(ctx, player_name: str, team: str, position: str):
+    """
+    Manually draft a player not in the system
+    Usage: !manualpick "Player Name" TEAM POSITION
+    Example: !manualpick "John Doe" KC QB
+    """
+    if not draft_manager.draft_active:
+        await ctx.send("❌ No active draft!")
+        return
+    
+    # Validate team
+    team = team.upper()
+    if team not in VALID_TEAMS:
+        valid = ', '.join(VALID_TEAMS)
+        await ctx.send(f"❌ Invalid team! Valid teams: {valid}")
+        return
+    
+    # Validate position
+    position = position.upper()
+    valid_positions = ['QB', 'RB', 'WR', 'TE']
+    if position not in valid_positions:
+        await ctx.send(f"❌ Invalid position! Valid positions: {', '.join(valid_positions)}")
+        return
+    
+    # Check if it's the right person's turn
+    current_user_id = draft_manager.draft_order[draft_manager.current_pick]
+    if ctx.author.id != current_user_id:
+        current_user = await bot.fetch_user(current_user_id)
+        await ctx.send(f"❌ It's not your turn! Waiting on {current_user.mention}")
+        return
+    
+    # Add the pick
+    user_id, error = draft_manager.add_pick(player_name, team, position)
+    
+    if error:
+        await ctx.send(f"❌ {error}")
+        return
+    
+    # Success message
+    pick_number = len(draft_manager.all_picks)
+    round_num = draft_manager.get_current_round()
+    team_name = TEAM_NAMES.get(team, team)
+    
+    embed = discord.Embed(
+        title="🎯 Manual Pick Confirmed!",
+        description=f"**{player_name}** ({team_name} {position})",
+        color=discord.Color.green()
+    )
+    embed.add_field(name="Drafted By", value=ctx.author.mention, inline=True)
+    embed.add_field(name="Pick", value=f"#{pick_number}", inline=True)
+    embed.add_field(name="Round", value=str(round_num), inline=True)
+    
+    await ctx.send(embed=embed)
+    
+    # Check if draft is complete
+    if draft_manager.current_pick >= len(draft_manager.draft_order):
+        await ctx.send("🎉 **DRAFT COMPLETE!** Use `!teams` to see all rosters or `!export` to get a CSV file.")
+    else:
+        # Show next pick
+        next_user_id = draft_manager.draft_order[draft_manager.current_pick]
+        next_user = await bot.fetch_user(next_user_id)
+        await ctx.send(f"⏰ **{next_user.mention}** is now on the clock!")
+
+@bot.command(name='undo')
 async def undo_pick(ctx):
     """Undo the last pick made in the draft"""
     if not draft_manager.is_active:
@@ -621,21 +681,6 @@ async def best_available(ctx, limit: int = 20):
         )
         all_available.extend(available)
     
-    # Add defenses
-    team_def_ranks = {
-        'DET': 1, 'BAL': 2, 'GB': 3, 'PHI': 4,
-        'KC': 6, 'DAL': 10, 'CIN': 12, 'CHI': 15
-    }
-    for team in VALID_TEAMS:
-        player_key = f"defense|{team.lower()}"
-        if player_key not in draft_manager.drafted_players:
-            all_available.append({
-                'name': f'{TEAM_NAMES[team]} Defense',
-                'position': 'DEF',
-                'team': team,
-                'fantasy_rank': team_def_ranks.get(team, 99)
-            })
-    
     # Sort by fantasy rank
     all_available.sort(key=lambda x: x.get('fantasy_rank', 999))
     
@@ -661,7 +706,7 @@ async def best_available(ctx, limit: int = 20):
         by_position[pos].append(player)
     
     # Add fields by position
-    for pos in ['QB', 'RB', 'WR', 'TE', 'DEF']:
+    for pos in ['QB', 'RB', 'WR', 'TE']:
         if pos in by_position:
             players_list = by_position[pos]
             # Format: "Name (TEAM) - Rank #"
