@@ -578,6 +578,66 @@ async def show_my_team(ctx):
     
     await ctx.send(embed=embed)
 
+@bot.command(name='draftstatus')
+async def draft_status(ctx):
+    """Show the current draft state and upcoming picks."""
+    if not draft_manager.base_draft_order:
+        await ctx.send("❌ No draft order configured. Use `!setdraftorder` to save an order or start a draft with mentions.")
+        return
+
+    order_text = "\n".join([f"{i+1}. <@{uid}>" for i, uid in enumerate(draft_manager.base_draft_order)])
+
+    embed = discord.Embed(
+        title="📋 Draft Status",
+        description=f"**Base Order:**\n{order_text}",
+        color=discord.Color.gold()
+    )
+
+    if draft_manager.is_active:
+        current_user = draft_manager.get_current_user()
+        next_user = draft_manager.get_next_user()
+        total_picks = len(draft_manager.draft_order)
+        pick_number = draft_manager.current_pick + 1
+        picks_remaining = total_picks - draft_manager.current_pick
+
+        embed.add_field(
+            name="Current Pick",
+            value=(
+                f"Pick {pick_number} of {total_picks}\n"
+                f"On the clock: <@{current_user}>\n"
+                f"Position: {draft_manager.current_position}"
+            ),
+            inline=False
+        )
+
+        if next_user:
+            embed.add_field(name="Up Next", value=f"<@{next_user}>", inline=True)
+
+        upcoming = []
+        for i in range(draft_manager.current_pick, min(draft_manager.current_pick + 6, total_picks)):
+            user_id = draft_manager.draft_order[i]
+            round_num = (i // len(draft_manager.base_draft_order)) + 1
+            pick_in_round = (i % len(draft_manager.base_draft_order)) + 1
+            upcoming.append(f"R{round_num} P{pick_in_round}: <@{user_id}>")
+
+        embed.add_field(
+            name="Upcoming Picks",
+            value="\n".join(upcoming) if upcoming else "—",
+            inline=False
+        )
+
+        embed.set_footer(text=f"{picks_remaining} picks remaining")
+    else:
+        embed.add_field(
+            name="Status",
+            value=(
+                "No active draft. Start with `!startdraft` to use this order."
+            ),
+            inline=False
+        )
+
+    await ctx.send(embed=embed)
+
 @bot.command(name='export')
 async def export_data(ctx):
     """Export draft data as JSON for scoring"""
