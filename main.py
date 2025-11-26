@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 import json
 import os
+import re
 from datetime import datetime
 
 # Bot setup
@@ -16,6 +17,17 @@ ROSTER_FILE = 'thanksgiving_rosters.json'
 
 # Draft defaults
 DEFAULT_ROUNDS = 5
+
+# Default handle order to seed drafts when no saved order exists
+DEFAULT_HANDLE_ORDER = [
+    "Mush",
+    "BLAINE",
+    "Kronk",
+    "Chef",
+    "Tezy",
+    "Paxton",
+    "Porky",
+]
 
 # Emoji numbers for selection
 NUMBER_EMOJIS = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟']
@@ -224,6 +236,63 @@ class DraftManager:
 draft_manager = DraftManager()
 
 
+def parse_mentions_in_order(message):
+    """Extract mentions exactly in the order they appear in the message text."""
+    ordered_mentions = []
+    seen = set()
+
+    for match in re.finditer(r"<@!?([0-9]+)>", message.content):
+        uid = match.group(1)
+        if uid not in seen:
+            ordered_mentions.append(uid)
+            seen.add(uid)
+
+    # Fallback: rely on raw_mentions if regex didn't find anything (should remain in-order)
+    if not ordered_mentions:
+        for uid in getattr(message, "raw_mentions", []):
+            uid_str = str(uid)
+            if uid_str not in seen:
+                ordered_mentions.append(uid_str)
+                seen.add(uid_str)
+
+    return ordered_mentions
+
+
+def resolve_default_handles(guild):
+    """Resolve the configured default handle order to user IDs for this guild."""
+    if guild is None:
+        return []
+
+    ordered_ids = []
+    seen = set()
+
+    for handle in DEFAULT_HANDLE_ORDER:
+        member = discord.utils.find(
+            lambda m: m.name.lower() == handle.lower() or (m.nick and m.nick.lower() == handle.lower()),
+            guild.members,
+        )
+        if member:
+            uid = str(member.id)
+            if uid not in seen:
+                ordered_ids.append(uid)
+                seen.add(uid)
+
+    return ordered_ids
+
+
+def ensure_base_order_seeded(guild):
+    """Seed the base draft order from default handles when none is saved."""
+    if draft_manager.base_draft_order:
+        return draft_manager.base_draft_order
+
+    resolved = resolve_default_handles(guild)
+    if resolved:
+        draft_manager.base_draft_order = resolved
+        draft_manager.save_data()
+
+    return draft_manager.base_draft_order
+
+
 def format_team_roster(players):
     """Format a team's picks into positional roster lines."""
     sorted_players = sorted(players, key=lambda p: p.get('pick_number', 0))
@@ -322,20 +391,20 @@ async def create_draft_board(ctx, position):
 @bot.command(name='setdraftorder')
 async def set_draft_order(ctx, *user_mentions):
     """Set and save a specific base draft order"""
-    if not user_mentions:
+    ordered_mentions = parse_mentions_in_order(ctx.message)
+
+    if not ordered_mentions:
         await ctx.send("❌ Please mention users in the desired order: `!setdraftorder @User1 @User2 @User3`")
         return
 
-    draft_order = [str(user.id) for user in ctx.message.mentions]
-
-    if len(draft_order) < 2:
+    if len(ordered_mentions) < 2:
         await ctx.send("❌ Need at least 2 users for a draft order!")
         return
 
-    draft_manager.base_draft_order = draft_order
+    draft_manager.base_draft_order = ordered_mentions
     draft_manager.save_data()
 
-    order_text = "\n".join([f"{i+1}. <@{uid}>" for i, uid in enumerate(draft_order)])
+    order_text = "\n".join([f"{i+1}. <@{uid}>" for i, uid in enumerate(ordered_mentions)])
     embed = discord.Embed(
         title="✅ Draft Order Saved",
         description=f"The base draft order has been set:\n{order_text}\n\nUse `!startdraft` to start using this order, or provide mentions to override it.",
@@ -363,10 +432,12 @@ async def start_draft(ctx, *args):
             pass
 
     # Draft order can be provided directly or pulled from a saved order
-    if ctx.message.mentions:
-        draft_order = [str(user.id) for user in ctx.message.mentions]
+    ordered_mentions = parse_mentions_in_order(ctx.message)
+
+    if ordered_mentions:
+        draft_order = ordered_mentions
     else:
-        draft_order = draft_manager.base_draft_order
+        draft_order = ensure_base_order_seeded(ctx.guild)
 
     if len(draft_order) < 2:
         await ctx.send("❌ Need at least 2 users for a draft! Provide mentions or set a saved order with `!setdraftorder`.")
@@ -581,6 +652,8 @@ async def show_my_team(ctx):
 @bot.command(name='draftstatus')
 async def draft_status(ctx):
     """Show the current draft state and upcoming picks."""
+    ensure_base_order_seeded(ctx.guild)
+
     if not draft_manager.base_draft_order:
         await ctx.send("❌ No draft order configured. Use `!setdraftorder` to save an order or start a draft with mentions.")
         return
