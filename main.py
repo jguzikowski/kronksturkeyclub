@@ -570,6 +570,32 @@ async def export_data(ctx):
     
     await ctx.send("📤 Draft data exported!", file=discord.File('draft_export.json'))
 
+@bot.command(name='undo')
+async def undo_pick(ctx):
+    """Undo the last pick made in the draft"""
+    if not draft_manager.is_active:
+        await ctx.send("❌ No active draft to undo!")
+        return
+    
+    if not draft_manager.all_picks:
+        await ctx.send("❌ No picks to undo!")
+        return
+    
+    # Get info about the pick we're undoing before we undo it
+    last_pick = draft_manager.all_picks[-1]
+    
+    # Undo the pick
+    success = draft_manager.undo_last_pick()
+    
+    if success:
+        await ctx.send(f"↩️ **Undone:** {last_pick['player_name']} ({last_pick['position']}, {last_pick['player_team']}) - Pick #{last_pick['pick_number']}")
+        
+        # Show updated draft board for the person who's now on the clock again
+        current_user_id = draft_manager.get_current_user()
+        await ctx.send(f"🔔 <@{current_user_id}> - Back on the clock!")
+    else:
+        await ctx.send("❌ Failed to undo pick!")
+
 @bot.command(name='bestavailable')
 async def best_available(ctx, limit: int = 20):
     """Show the best available players across all positions
