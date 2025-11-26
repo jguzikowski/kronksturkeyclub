@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands
 import json
 import os
+import re
 from datetime import datetime
 
 # Bot setup
@@ -14,19 +15,8 @@ bot = commands.Bot(command_prefix='!', intents=intents)
 DRAFT_DATA_FILE = 'draft_data.json'
 ROSTER_FILE = 'thanksgiving_rosters.json'
 
-# Valid teams for Thanksgiving weekend 2025
-VALID_TEAMS = ['GB', 'DET', 'KC', 'DAL', 'CIN', 'BAL', 'CHI', 'PHI']
-
-TEAM_NAMES = {
-    'GB': 'Green Bay Packers',
-    'DET': 'Detroit Lions',
-    'KC': 'Kansas City Chiefs',
-    'DAL': 'Dallas Cowboys',
-    'CIN': 'Cincinnati Bengals',
-    'BAL': 'Baltimore Ravens',
-    'CHI': 'Chicago Bears',
-    'PHI': 'Philadelphia Eagles'
-}
+# Draft defaults
+DEFAULT_ROUNDS = 5
 
 # Emoji numbers for selection
 NUMBER_EMOJIS = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣', '7️⃣', '8️⃣', '9️⃣', '🔟']
@@ -34,11 +24,13 @@ NUMBER_EMOJIS = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣
 # Position emojis for navigation
 POSITION_EMOJIS = {
     '🏈': 'QB',
-    '🏃': 'RB', 
+    '🏃': 'RB',
     '🙌': 'WR',
-    '🤲': 'TE',
-    '🛡️': 'DEF'
+    '🤲': 'TE'
 }
+
+# Roster layout for positional displays
+ROSTER_POSITIONS = ['QB', 'RB', 'WR', 'TE']
 
 class RosterManager:
     def __init__(self):
@@ -68,23 +60,6 @@ class RosterManager:
     
     def get_top_available(self, position, drafted_players, limit=10):
         """Get top available players at a position"""
-        if position == 'DEF':
-            # For defense, return one entry per team
-            available_teams = []
-            for team in VALID_TEAMS:
-                player_key = f"defense|{team.lower()}"
-                if player_key not in drafted_players:
-                    available_teams.append({
-                        'name': f'{TEAM_NAMES[team]} Defense',
-                        'full_name': f'{TEAM_NAMES[team]} Defense',
-                        'position': 'DEF',
-                        'team': team,
-                        'team_name': TEAM_NAMES[team],
-                        'headshot': '',
-                        'jersey': ''
-                    })
-            return available_teams[:limit]
-        
         available = []
         for player in self.players_by_position.get(position, []):
             player_key = f"{player['name'].lower()}|{player['team'].lower()}"
@@ -109,6 +84,13 @@ class DraftManager:
         self.current_draft_message = None
         self.current_position = 'QB'
         self.load_data()
+
+    def end_draft(self):
+        """End the current draft session while preserving picks"""
+        self.is_active = False
+        self.channel_id = None
+        self.current_draft_message = None
+        self.save_data()
     
     def start_draft(self, draft_order, num_rounds, channel_id):
         self.base_draft_order = draft_order
@@ -242,6 +224,40 @@ class DraftManager:
 
 draft_manager = DraftManager()
 
+
+def format_team_roster(players):
+    """Format a team's picks into positional roster lines."""
+    sorted_players = sorted(players, key=lambda p: p.get('pick_number', 0))
+
+    slots = {pos: None for pos in ROSTER_POSITIONS}
+    flex_candidates = []
+
+    for pick in sorted_players:
+        pos = pick.get('position')
+        if pos in slots and slots[pos] is None:
+            slots[pos] = pick
+        else:
+            flex_candidates.append(pick)
+
+    lines = []
+    for pos in ROSTER_POSITIONS:
+        pick = slots[pos]
+        if pick:
+            lines.append(f"{pos}: {pick['player_name']} ({pick['position']} - {pick['player_team']})")
+        else:
+            lines.append(f"{pos}: —")
+
+    if flex_candidates:
+        flex_text = " / ".join(
+            [f"{p['player_name']} ({p['position']} - {p['player_team']})" for p in flex_candidates]
+        )
+    else:
+        flex_text = "—"
+
+    lines.append(f"Flex: {flex_text}")
+
+    return "\n".join(lines)
+
 @bot.event
 async def on_ready():
     print(f'Starting bot...')
@@ -296,7 +312,7 @@ async def create_draft_board(ctx, position):
     # Add position navigation
     embed.add_field(
         name="\n🔄 Switch Position",
-        value="🏈 QB | 🏃 RB | 🙌 WR | 🤲 TE | 🛡️ DEF",
+        value="🏈 QB | 🏃 RB | 🙌 WR | 🤲 TE",
         inline=False
     )
     
@@ -304,21 +320,70 @@ async def create_draft_board(ctx, position):
     
     return embed, available_players
 
+@bot.command(name='setdraftorder')
+async def set_draft_order(ctx, *user_mentions):
+    """Set and save a specific base draft order"""
+    # Preserve the exact textual mention order rather than relying on raw_mentions
+    ordered_mentions = []
+    seen = set()
+    for uid in re.findall(r'<@!?([0-9]+)>', ctx.message.content):
+        if uid not in seen:
+            ordered_mentions.append(uid)
+            seen.add(uid)
+
+    if not ordered_mentions:
+        await ctx.send("❌ Please mention users in the desired order: `!setdraftorder @User1 @User2 @User3`")
+        return
+
+    if len(ordered_mentions) < 2:
+        await ctx.send("❌ Need at least 2 users for a draft order!")
+        return
+
+    draft_manager.base_draft_order = ordered_mentions
+    draft_manager.save_data()
+
+    order_text = "\n".join([f"{i+1}. <@{uid}>" for i, uid in enumerate(ordered_mentions)])
+    embed = discord.Embed(
+        title="✅ Draft Order Saved",
+        description=f"The base draft order has been set:\n{order_text}\n\nUse `!startdraft` to start using this order, or provide mentions to override it.",
+        color=discord.Color.green()
+    )
+
+    await ctx.send(embed=embed)
+
 @bot.command(name='startdraft')
-async def start_draft(ctx, rounds: int, *user_mentions):
-    """Start a new visual draft"""
-    if not user_mentions:
-        await ctx.send("❌ Please provide number of rounds and mention users:\n`!startdraft 5 @User1 @User2 @User3`")
-        return
-    
-    if rounds < 1 or rounds > 20:
-        await ctx.send("❌ Number of rounds must be between 1 and 20!")
-        return
-    
-    draft_order = [str(user.id) for user in ctx.message.mentions]
-    
+async def start_draft(ctx, *args):
+    """Start a new visual draft (defaults to 5 rounds)"""
+    rounds = DEFAULT_ROUNDS
+
+    # Support an optional explicit rounds argument; otherwise default to 5
+    if args:
+        try:
+            possible_rounds = int(args[0])
+            if possible_rounds != DEFAULT_ROUNDS:
+                await ctx.send("❌ Drafts are limited to exactly 5 rounds. No other round counts are supported.")
+                return
+            rounds = possible_rounds
+            args = args[1:]
+        except ValueError:
+            # First argument is a mention; keep default rounds
+            pass
+
+    # Draft order can be provided directly or pulled from a saved order
+    ordered_mentions = []
+    seen = set()
+    for uid in re.findall(r'<@!?([0-9]+)>', ctx.message.content):
+        if uid not in seen:
+            ordered_mentions.append(uid)
+            seen.add(uid)
+
+    if ordered_mentions:
+        draft_order = ordered_mentions
+    else:
+        draft_order = draft_manager.base_draft_order
+
     if len(draft_order) < 2:
-        await ctx.send("❌ Need at least 2 users for a draft!")
+        await ctx.send("❌ Need at least 2 users for a draft! Provide mentions or set a saved order with `!setdraftorder`.")
         return
     
     draft_manager.start_draft(draft_order, rounds, ctx.channel.id)
@@ -346,8 +411,30 @@ async def start_draft(ctx, rounds: int, *user_mentions):
     # Add position navigation
     for emoji in POSITION_EMOJIS.keys():
         await message.add_reaction(emoji)
-    
+
     draft_manager.current_draft_message = message.id
+
+@bot.command(name='enddraft')
+async def end_draft(ctx):
+    """End the current draft early"""
+    if not draft_manager.is_active:
+        await ctx.send("❌ There is no active draft to end. Use `!startdraft` to begin a new one.")
+        return
+
+    total_picks = len(draft_manager.all_picks)
+    draft_manager.end_draft()
+
+    embed = discord.Embed(
+        title="🛑 Draft Ended",
+        description=(
+            f"Ended by <@{ctx.author.id}>.\n\n"
+            f"**Picks recorded:** {total_picks}\n"
+            "Use `!export` to download results or `!startdraft` to begin a new draft."
+        ),
+        color=discord.Color.red()
+    )
+
+    await ctx.send(embed=embed)
 
 @bot.event
 async def on_reaction_add(reaction, user):
@@ -473,18 +560,15 @@ async def show_teams(ctx):
         return
     
     for user_id, team_data in draft_manager.teams.items():
-        players_text = "\n".join([
-            f"{i+1}. {p['player_name']} ({p['position']} - {p['player_team']})" 
-            for i, p in enumerate(team_data['players'])
-        ]) or "No picks yet"
-        
+        roster_text = format_team_roster(team_data['players']) if team_data['players'] else "No picks yet"
+
         embed = discord.Embed(
             title=f"🏈 {team_data['team_name']}",
-            description=f"**Manager:** <@{user_id}>\n\n{players_text}",
+            description=f"**Manager:** <@{user_id}>\n\n{roster_text}",
             color=discord.Color.blue()
         )
         embed.set_footer(text=f"{len(team_data['players'])} players")
-        
+
         await ctx.send(embed=embed)
 
 @bot.command(name='myteam')
@@ -497,18 +581,75 @@ async def show_my_team(ctx):
         return
     
     team_data = draft_manager.teams[user_id]
-    players_text = "\n".join([
-        f"{i+1}. {p['player_name']} ({p['position']} - {p['player_team']})" 
-        for i, p in enumerate(team_data['players'])
-    ]) or "No picks yet"
+    roster_text = format_team_roster(team_data['players']) if team_data['players'] else "No picks yet"
     
     embed = discord.Embed(
         title=f"🏈 {team_data['team_name']}",
-        description=players_text,
+        description=roster_text,
         color=discord.Color.blue()
     )
     embed.set_footer(text=f"{len(team_data['players'])} players")
     
+    await ctx.send(embed=embed)
+
+@bot.command(name='draftstatus')
+async def draft_status(ctx):
+    """Show the current draft state and upcoming picks."""
+    if not draft_manager.base_draft_order:
+        await ctx.send("❌ No draft order configured. Use `!setdraftorder` to save an order or start a draft with mentions.")
+        return
+
+    order_text = "\n".join([f"{i+1}. <@{uid}>" for i, uid in enumerate(draft_manager.base_draft_order)])
+
+    embed = discord.Embed(
+        title="📋 Draft Status",
+        description=f"**Base Order:**\n{order_text}",
+        color=discord.Color.gold()
+    )
+
+    if draft_manager.is_active:
+        current_user = draft_manager.get_current_user()
+        next_user = draft_manager.get_next_user()
+        total_picks = len(draft_manager.draft_order)
+        pick_number = draft_manager.current_pick + 1
+        picks_remaining = total_picks - draft_manager.current_pick
+
+        embed.add_field(
+            name="Current Pick",
+            value=(
+                f"Pick {pick_number} of {total_picks}\n"
+                f"On the clock: <@{current_user}>\n"
+                f"Position: {draft_manager.current_position}"
+            ),
+            inline=False
+        )
+
+        if next_user:
+            embed.add_field(name="Up Next", value=f"<@{next_user}>", inline=True)
+
+        upcoming = []
+        for i in range(draft_manager.current_pick, min(draft_manager.current_pick + 6, total_picks)):
+            user_id = draft_manager.draft_order[i]
+            round_num = (i // len(draft_manager.base_draft_order)) + 1
+            pick_in_round = (i % len(draft_manager.base_draft_order)) + 1
+            upcoming.append(f"R{round_num} P{pick_in_round}: <@{user_id}>")
+
+        embed.add_field(
+            name="Upcoming Picks",
+            value="\n".join(upcoming) if upcoming else "—",
+            inline=False
+        )
+
+        embed.set_footer(text=f"{picks_remaining} picks remaining")
+    else:
+        embed.add_field(
+            name="Status",
+            value=(
+                "No active draft. Start with `!startdraft` to use this order."
+            ),
+            inline=False
+        )
+
     await ctx.send(embed=embed)
 
 @bot.command(name='export')
