@@ -4077,7 +4077,7 @@
     "headshot": "https://a.espncdn.com/i/headshots/nfl/players/full/3139477.png",
     "team": "KC",
     "team_name": "Kansas City Chiefs",
-    "fantasy_rank": 2
+    "fantasy_rank": 5
   },
   {
     "name": "Jalen Hurts",
@@ -4097,7 +4097,7 @@
     "headshot": "https://a.espncdn.com/i/headshots/nfl/players/full/3915511.png",
     "team": "CIN",
     "team_name": "Cincinnati Bengals",
-    "fantasy_rank": 4
+    "fantasy_rank": 5
   },
   {
     "name": "Jordan Love",
@@ -4107,7 +4107,7 @@
     "headshot": "https://a.espncdn.com/i/headshots/nfl/players/full/4036378.png",
     "team": "GB",
     "team_name": "Green Bay Packers",
-    "fantasy_rank": 5
+    "fantasy_rank": 15
   },
   {
     "name": "Jared Goff",
@@ -4117,7 +4117,7 @@
     "headshot": "https://a.espncdn.com/i/headshots/nfl/players/full/3046779.png",
     "team": "DET",
     "team_name": "Detroit Lions",
-    "fantasy_rank": 6
+    "fantasy_rank": 11
   },
   {
     "name": "Caleb Williams",
@@ -4127,7 +4127,7 @@
     "headshot": "https://a.espncdn.com/i/headshots/nfl/players/full/4431611.png",
     "team": "CHI",
     "team_name": "Chicago Bears",
-    "fantasy_rank": 7
+    "fantasy_rank": 16
   },
   {
     "name": "Cooper Rush",
@@ -4137,7 +4137,7 @@
     "headshot": "https://a.espncdn.com/i/headshots/nfl/players/full/2972515.png",
     "team": "BAL",
     "team_name": "Baltimore Ravens",
-    "fantasy_rank": 15
+    "fantasy_rank": 25
   },
   {
     "name": "Malik Willis",
@@ -4367,7 +4367,7 @@
     "headshot": "https://a.espncdn.com/i/headshots/nfl/players/full/3059915.png",
     "team": "KC",
     "team_name": "Kansas City Chiefs",
-    "fantasy_rank": 8
+    "fantasy_rank": 12
   },
   {
     "name": "D'Andre Swift",
@@ -4377,7 +4377,7 @@
     "headshot": "https://a.espncdn.com/i/headshots/nfl/players/full/4259545.png",
     "team": "CHI",
     "team_name": "Chicago Bears",
-    "fantasy_rank": 12
+    "fantasy_rank": 29
   },
   {
     "name": "Chase Brown",
@@ -4387,7 +4387,7 @@
     "headshot": "https://a.espncdn.com/i/headshots/nfl/players/full/4362238.png",
     "team": "CIN",
     "team_name": "Cincinnati Bengals",
-    "fantasy_rank": 15
+    "fantasy_rank": 9
   },
   {
     "name": "Emanuel Wilson",
@@ -5247,7 +5247,7 @@
     "headshot": "https://a.espncdn.com/i/headshots/nfl/players/full/4430027.png",
     "team": "DET",
     "team_name": "Detroit Lions",
-    "fantasy_rank": 1
+    "fantasy_rank": 99
   },
   {
     "name": "Travis Kelce",
@@ -5257,7 +5257,7 @@
     "headshot": "https://a.espncdn.com/i/headshots/nfl/players/full/15847.png",
     "team": "KC",
     "team_name": "Kansas City Chiefs",
-    "fantasy_rank": 2
+    "fantasy_rank": 4
   },
   {
     "name": "Mark Andrews",
@@ -5267,7 +5267,7 @@
     "headshot": "https://a.espncdn.com/i/headshots/nfl/players/full/3116365.png",
     "team": "BAL",
     "team_name": "Baltimore Ravens",
-    "fantasy_rank": 3
+    "fantasy_rank": 5
   },
   {
     "name": "Dallas Goedert",
@@ -5277,7 +5277,7 @@
     "headshot": "https://a.espncdn.com/i/headshots/nfl/players/full/3121023.png",
     "team": "PHI",
     "team_name": "Philadelphia Eagles",
-    "fantasy_rank": 4
+    "fantasy_rank": 10
   },
   {
     "name": "Tucker Kraft",
@@ -5307,7 +5307,7 @@
     "headshot": "https://a.espncdn.com/i/headshots/nfl/players/full/4242355.png",
     "team": "DAL",
     "team_name": "Dallas Cowboys",
-    "fantasy_rank": 10
+    "fantasy_rank": 8
   },
   {
     "name": "Mike Gesicki",

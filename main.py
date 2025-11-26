@@ -570,6 +570,93 @@ async def export_data(ctx):
     
     await ctx.send("📤 Draft data exported!", file=discord.File('draft_export.json'))
 
+@bot.command(name='bestavailable')
+async def best_available(ctx, limit: int = 20):
+    """Show the best available players across all positions
+    
+    Usage: !bestavailable [number]
+    Example: !bestavailable 15
+    
+    Shows top players still available, sorted by fantasy rank.
+    Default shows top 20 if no number provided.
+    """
+    if limit < 1 or limit > 50:
+        await ctx.send("❌ Please choose a number between 1 and 50")
+        return
+    
+    # Gather all available players from all positions
+    all_available = []
+    
+    for position in ['QB', 'RB', 'WR', 'TE']:
+        available = roster_manager.get_top_available(
+            position,
+            draft_manager.drafted_players,
+            limit=100  # Get many to sort across positions
+        )
+        all_available.extend(available)
+    
+    # Add defenses
+    team_def_ranks = {
+        'DET': 1, 'BAL': 2, 'GB': 3, 'PHI': 4,
+        'KC': 6, 'DAL': 10, 'CIN': 12, 'CHI': 15
+    }
+    for team in VALID_TEAMS:
+        player_key = f"defense|{team.lower()}"
+        if player_key not in draft_manager.drafted_players:
+            all_available.append({
+                'name': f'{TEAM_NAMES[team]} Defense',
+                'position': 'DEF',
+                'team': team,
+                'fantasy_rank': team_def_ranks.get(team, 99)
+            })
+    
+    # Sort by fantasy rank
+    all_available.sort(key=lambda x: x.get('fantasy_rank', 999))
+    
+    # Take top N
+    top_players = all_available[:limit]
+    
+    if not top_players:
+        await ctx.send("❌ No players available!")
+        return
+    
+    # Create embed
+    embed = discord.Embed(
+        title=f"📊 Top {len(top_players)} Available Players",
+        color=discord.Color.gold()
+    )
+    
+    # Group by position for cleaner display
+    by_position = {}
+    for player in top_players:
+        pos = player['position']
+        if pos not in by_position:
+            by_position[pos] = []
+        by_position[pos].append(player)
+    
+    # Add fields by position
+    for pos in ['QB', 'RB', 'WR', 'TE', 'DEF']:
+        if pos in by_position:
+            players_list = by_position[pos]
+            # Format: "Name (TEAM) - Rank #"
+            players_text = "\n".join([
+                f"**{p['name']}** ({p['team']}) - Rank {p['fantasy_rank']}"
+                for p in players_list
+            ])
+            embed.add_field(
+                name=f"{pos} ({len(players_list)})",
+                value=players_text,
+                inline=False
+            )
+    
+    current_user = draft_manager.get_current_user()
+    if current_user and draft_manager.is_active:
+        embed.set_footer(text=f"On the clock: <@{current_user}> • Round {draft_manager.get_current_round()}")
+    else:
+        embed.set_footer(text="Use !startdraft to begin drafting")
+    
+    await ctx.send(embed=embed)
+
 # Run bot
 token = os.getenv('DISCORD_BOT_TOKEN')
 if not token:
